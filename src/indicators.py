@@ -34,6 +34,16 @@ def calculate_atr(df, period=11):
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     return tr.rolling(window=period).mean()
 
+def calculate_atr_wilder(df, period=11):
+    """
+    Calculates Average True Range using Wilder's Smoothing (RMA) rather than simple SMA.
+    """
+    high_low = df['high'] - df['low']
+    high_close = np.abs(df['high'] - df['close'].shift())
+    low_close = np.abs(df['low'] - df['close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.ewm(alpha=1.0/period, adjust=False).mean()
+
 def calculate_adx(df, period=14):
     """
     Calculates the Average Directional Index (ADX) using Wilder's smoothing.
@@ -314,6 +324,16 @@ def add_indicators(df, indicators):
         df['ATR'] = calculate_atr(df, 11)
     if "ATR_21" in indicators:
         df['ATR_21'] = calculate_atr(df, 21)
+    
+    # Dynamic ATR Wilder processing
+    for ind in indicators:
+        if ind.startswith("ATR_W_"):
+            try:
+                period = int(ind.split("_")[-1])
+                df[ind] = calculate_atr_wilder(df, period)
+            except ValueError:
+                pass
+                
     if "ADX" in indicators:
         # Default period 14, can be overridden in strategy
         df['ADX'] = calculate_adx(df, 14)
