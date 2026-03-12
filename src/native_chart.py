@@ -1,23 +1,21 @@
-try:
-    import streamlit as st
-except ImportError:
-    class MockSt:
-        @staticmethod
-        def warning(*args, **kwargs): pass
-        @staticmethod
-        def error(*args, **kwargs): pass
-        @staticmethod
-        def markdown(*args, **kwargs): pass
-        class components:
-            class v1:
-                @staticmethod
-                def html(*args, **kwargs): pass
-    st = MockSt()
+import numpy as np
+import pandas as pd
 
-try:
-    from streamlit_lightweight_charts import renderLightweightCharts
-except ImportError:
-    def renderLightweightCharts(*args, **kwargs): pass
+# Streamlit removed for Lean Build
+class MockSt:
+    @staticmethod
+    def warning(*args, **kwargs): pass
+    @staticmethod
+    def error(*args, **kwargs): pass
+    @staticmethod
+    def markdown(*args, **kwargs): pass
+    class components:
+        class v1:
+            @staticmethod
+            def html(*args, **kwargs): pass
+st = MockSt()
+
+def renderLightweightCharts(*args, **kwargs): pass
 
 
 def render_advanced_tv_chart(ticker, timeframe="1h", theme="Light"):

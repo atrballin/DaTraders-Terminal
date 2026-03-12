@@ -1,26 +1,24 @@
-try:
-    import streamlit as st
-    import streamlit.components.v1 as components
-except ImportError:
-    class MockSt:
-        @staticmethod
-        def warning(*args, **kwargs): pass
-        @staticmethod
-        def error(*args, **kwargs): pass
-        @staticmethod
-        def markdown(*args, **kwargs): pass
-        @staticmethod
-        def plotly_chart(*args, **kwargs): pass
-    class MockComponents:
-        @staticmethod
-        def iframe(*args, **kwargs): pass
-    st = MockSt()
-    components = MockComponents()
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
 
-try:
-    from streamlit_lightweight_charts import renderLightweightCharts
-except ImportError:
-    def renderLightweightCharts(*args, **kwargs): pass
+# Streamlit removed for Lean Build
+class MockSt:
+    @staticmethod
+    def warning(*args, **kwargs): pass
+    @staticmethod
+    def error(*args, **kwargs): pass
+    @staticmethod
+    def markdown(*args, **kwargs): pass
+    @staticmethod
+    def plotly_chart(*args, **kwargs): pass
+class MockComponents:
+    @staticmethod
+    def iframe(*args, **kwargs): pass
+st = MockSt()
+components = MockComponents()
+
+def renderLightweightCharts(*args, **kwargs): pass
 
 
 def render_mt5_chart(data, ticker, timeframe, indicators=[], **kwargs):

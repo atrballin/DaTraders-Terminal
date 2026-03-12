@@ -1,17 +1,14 @@
 import MetaTrader5 as mt5
-try:
-    import streamlit as st
-except ImportError:
-    class MockSt:
-        @staticmethod
-        def error(*args, **kwargs): pass
-        @staticmethod
-        def warning(*args, **kwargs): pass
-        @staticmethod
-        def info(*args, **kwargs): pass
-        @staticmethod
-        def success(*args, **kwargs): pass
-    st = MockSt()
+class MockSt:
+    @staticmethod
+    def error(*args, **kwargs): print(f"ERROR: {args}")
+    @staticmethod
+    def warning(*args, **kwargs): print(f"WARNING: {args}")
+    @staticmethod
+    def info(*args, **kwargs): print(f"INFO: {args}")
+    @staticmethod
+    def success(*args, **kwargs): print(f"SUCCESS: {args}")
+st = MockSt()
 
 import pandas as pd
 from datetime import datetime

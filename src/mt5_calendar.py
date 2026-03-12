@@ -1,38 +1,36 @@
-try:
-    import streamlit as st
-except ImportError:
-    class MockSt:
+# Streamlit removed for Lean Build
+class MockSt:
+    @staticmethod
+    def markdown(*args, **kwargs): pass
+    @staticmethod
+    def error(*args, **kwargs): pass
+    @staticmethod
+    def warning(*args, **kwargs): pass
+    @staticmethod
+    def info(*args, **kwargs): pass
+    @staticmethod
+    def divider(): pass
+    @staticmethod
+    def caption(*args, **kwargs): pass
+    @staticmethod
+    def columns(*args, **kwargs): return [MockSt() for _ in range(10)]
+    @staticmethod
+    def spinner(*args, **kwargs):
+        class MockSpinner:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+        return MockSpinner()
+    class components:
         @staticmethod
-        def markdown(*args, **kwargs): pass
-        @staticmethod
-        def error(*args, **kwargs): pass
-        @staticmethod
-        def warning(*args, **kwargs): pass
-        @staticmethod
-        def info(*args, **kwargs): pass
-        @staticmethod
-        def divider(): pass
-        @staticmethod
-        def caption(*args, **kwargs): pass
-        @staticmethod
-        def columns(*args, **kwargs): return [MockSt() for _ in range(10)]
-        @staticmethod
-        def spinner(*args, **kwargs):
-            class MockSpinner:
-                def __enter__(self): return self
-                def __exit__(self, *args): pass
-            return MockSpinner()
-        class components:
-            @staticmethod
-            def v1(*args, **kwargs):
-                class MockV1:
-                    @staticmethod
-                    def html(*args, **kwargs): pass
-                return MockV1()
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-    st = MockSt()
-    st.components.v1 = st.components.v1() # Hack to make st.components.v1.html work
+        def v1(*args, **kwargs):
+            class MockV1:
+                @staticmethod
+                def html(*args, **kwargs): pass
+            return MockV1()
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+st = MockSt()
+st.components.v1 = st.components.v1()
 
 import pandas as pd
 from src.data_loader import get_fred_economic_data, get_mt5_calendar_data

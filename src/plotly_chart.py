@@ -1,12 +1,10 @@
-try:
-    import streamlit as st
-except ImportError:
-    class MockSt:
-        @staticmethod
-        def info(*args, **kwargs): pass
-        @staticmethod
-        def plotly_chart(*args, **kwargs): pass
-    st = MockSt()
+# Streamlit removed for Lean Build
+class MockSt:
+    @staticmethod
+    def info(*args, **kwargs): print(f"INFO: {args}")
+    @staticmethod
+    def plotly_chart(*args, **kwargs): print(f"PLOT: {args}")
+st = MockSt()
 
 import pandas as pd
 import plotly.graph_objects as go

@@ -1,16 +1,30 @@
 import pandas as pd
 import MetaTrader5 as mt5
-try:
-    import streamlit as st
-except ImportError:
-    class MockSt:
-        @staticmethod
-        def cache_data(*args, **kwargs): return lambda x: x
-        @staticmethod
-        def cache_resource(*args, **kwargs): return lambda x: x
-        @staticmethod
-        def error(*args, **kwargs): pass
-        @staticmethod
+# Streamlit removed for Lean Build
+class MockSt:
+    @staticmethod
+    def cache_data(*args, **kwargs): return lambda x: x
+    @staticmethod
+    def cache_resource(*args, **kwargs): return lambda x: x
+    @staticmethod
+    def error(*args, **kwargs): pass
+    @staticmethod
+    def info(*args, **kwargs): pass
+    @staticmethod
+    def success(*args, **kwargs): pass
+    @staticmethod
+    def warning(*args, **kwargs): pass
+    @staticmethod
+    def markdown(*args, **kwargs): pass
+    @staticmethod
+    def caption(*args, **kwargs): pass
+    @staticmethod
+    def spinner(*args, **kwargs):
+        class MockSpinner:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+        return MockSpinner()
+st = MockSt()
         def info(*args, **kwargs): pass
         @staticmethod
         def success(*args, **kwargs): pass

@@ -1,10 +1,8 @@
-try:
-    import streamlit as st
-except ImportError:
-    class MockSt:
-        @staticmethod
-        def markdown(*args, **kwargs): pass
-    st = MockSt()
+# Streamlit removed for Lean Build
+class MockSt:
+    @staticmethod
+    def markdown(*args, **kwargs): print(f"STYLE: {args}")
+st = MockSt()
 
 
 def apply_material_styles():

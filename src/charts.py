@@ -1,15 +1,12 @@
-try:
-    import streamlit as st
-    import streamlit.components.v1 as components
-except ImportError:
-    class MockSt:
-        @staticmethod
-        def markdown(*args, **kwargs): pass
-    class MockComponents:
-        @staticmethod
-        def html(*args, **kwargs): pass
-    st = MockSt()
-    components = MockComponents()
+# Streamlit removed for Lean Build
+class MockSt:
+    @staticmethod
+    def markdown(*args, **kwargs): pass
+class MockComponents:
+    @staticmethod
+    def html(*args, **kwargs): pass
+st = MockSt()
+components = MockComponents()
 
 
 def render_tradingview_widget(ticker, height=800):
