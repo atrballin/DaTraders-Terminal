@@ -25,22 +25,6 @@ class MockSt:
             def __exit__(self, *args): pass
         return MockSpinner()
 st = MockSt()
-        def info(*args, **kwargs): pass
-        @staticmethod
-        def success(*args, **kwargs): pass
-        @staticmethod
-        def warning(*args, **kwargs): pass
-        @staticmethod
-        def markdown(*args, **kwargs): pass
-        @staticmethod
-        def caption(*args, **kwargs): pass
-        @staticmethod
-        def spinner(*args, **kwargs):
-            class MockSpinner:
-                def __enter__(self): return self
-                def __exit__(self, *args): pass
-            return MockSpinner()
-    st = MockSt()
 
 import os
 import json
