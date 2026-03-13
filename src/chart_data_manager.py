@@ -1,12 +1,11 @@
 """
 ChartDataManager: Local chart data caching with tick-by-tick updates.
-Saves MT5 OHLC data to CSV files locally and keeps them updated in real-time.
+Saves MT5 OHLC data to JSON files locally and keeps them updated in real-time.
 """
 
 import os
-import time
+import json
 import threading
-import pandas as pd
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 
@@ -41,10 +40,11 @@ TF_POLL_INTERVAL = {
 
 class ChartDataManager:
     """
-    Manages local CSV chart data files.
+    Manages local JSON chart data files.
     - Downloads initial history from MT5.
     - Runs a background thread that updates data tick-by-tick.
     - Serves chart data from local files for zero-latency reads.
+    - Broadcasts live updates via callbacks.
     """
 
     def __init__(self, data_dir=None):
@@ -54,52 +54,66 @@ class ChartDataManager:
         self._active_streams = {}   # key: (symbol, tf_key) → thread
         self._stream_flags = {}     # key: (symbol, tf_key) → threading.Event (stop flag)
         self._lock = threading.Lock()
-        self._cache = {}            # key: (symbol, tf_key) → pd.DataFrame (in-memory)
+        self._cache = {}            # key: (symbol, tf_key) → List[dict] (in-memory)
+        
+        # Callback for real-time updates: func(symbol, tf_key, candle_dict)
+        self.on_candle_update = None
 
     # ── File Path Helpers ──────────────────────────────────────────
 
     def _file_path(self, symbol, tf_key):
-        """Returns the local CSV path for a symbol/timeframe pair."""
+        """Returns the local JSON path for a symbol/timeframe pair."""
         safe_symbol = symbol.replace(" ", "_").replace("/", "_")
-        return os.path.join(self.data_dir, f"{safe_symbol}_{tf_key}.csv")
+        symbol_dir = os.path.join(self.data_dir, safe_symbol)
+        os.makedirs(symbol_dir, exist_ok=True)
+        return os.path.join(symbol_dir, f"{tf_key}.json")
 
     # ── Core Data Operations ───────────────────────────────────────
 
     def _download_initial(self, symbol, tf_key):
-        """Downloads a full history chunk from MT5 and saves to CSV."""
+        """Downloads a full history chunk from MT5 and saves to JSON."""
         mt5_tf = TF_MAP.get(tf_key)
         if mt5_tf is None:
             print(f"[ChartData] Unknown timeframe: {tf_key}")
             return None
 
+        # copy_rates_from_pos returns a structured numpy array
         rates = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, INITIAL_BAR_COUNT)
         if rates is None or len(rates) == 0:
             print(f"[ChartData] No data from MT5 for {symbol} {tf_key}")
             return None
 
-        df = pd.DataFrame(rates)
-        # Keep time as unix timestamp (int) for consistency
-        df = df[['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread', 'real_volume']]
-        df.to_csv(self._file_path(symbol, tf_key), index=False)
-        print(f"[ChartData] Saved {len(df)} bars for {symbol} {tf_key}")
-        return df
+        # Convert numpy array to list of dicts for JSON
+        data = []
+        for r in rates:
+            data.append({
+                "time": int(r['time']),
+                "open": float(r['open']),
+                "high": float(r['high']),
+                "low": float(r['low']),
+                "close": float(r['close']),
+                "tick_volume": int(r['tick_volume'])
+            })
+
+        with open(self._file_path(symbol, tf_key), "w") as f:
+            json.dump(data, f)
+            
+        print(f"[ChartData] Saved {len(data)} bars for {symbol} {tf_key}")
+        return data
 
     def _update_latest(self, symbol, tf_key):
         """
-        Fetches the latest bars from MT5 and merges them into the local file.
-        This handles both updating the current (forming) candle and appending new ones.
+        Fetches the latest bars from MT5 and merges them into the local cache.
+        Broadcasting updates if new data is available.
         """
         mt5_tf = TF_MAP.get(tf_key)
         if mt5_tf is None:
             return
 
-        # Fetch last 5 bars to handle edge cases (new candle just formed)
-        rates = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, 5)
+        # Fetch last 2 bars to handle both the current forming candle and potentially a new one
+        rates = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, 2)
         if rates is None or len(rates) == 0:
             return
-
-        new_df = pd.DataFrame(rates)
-        new_df = new_df[['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread', 'real_volume']]
 
         cache_key = (symbol, tf_key)
         file_path = self._file_path(symbol, tf_key)
@@ -109,68 +123,109 @@ class ChartDataManager:
             if cache_key in self._cache:
                 existing = self._cache[cache_key]
             elif os.path.exists(file_path):
-                existing = pd.read_csv(file_path)
+                with open(file_path, "r") as f:
+                    existing = json.load(f)
+                self._cache[cache_key] = existing
             else:
                 existing = self._download_initial(symbol, tf_key)
-                if existing is not None:
+                if existing:
                     self._cache[cache_key] = existing
                 return
 
-            if existing is None or existing.empty:
+            if not existing:
                 return
 
-            # Merge: update existing rows by time, append new ones
-            existing.set_index('time', inplace=True)
-            new_df.set_index('time', inplace=True)
+            last_saved_time = existing[-1]['time']
+            updates_made = False
 
-            # Update existing timestamps (current candle's OHLC changes tick-by-tick)
-            existing.update(new_df)
+            for r in rates:
+                candle = {
+                    "time": int(r['time']),
+                    "open": float(r['open']),
+                    "high": float(r['high']),
+                    "low": float(r['low']),
+                    "close": float(r['close']),
+                    "tick_volume": int(r['tick_volume'])
+                }
 
-            # Append any truly new bars (timestamps not in existing)
-            new_timestamps = new_df.index.difference(existing.index)
-            if len(new_timestamps) > 0:
-                existing = pd.concat([existing, new_df.loc[new_timestamps]])
+                if candle['time'] == last_saved_time:
+                    # Update existing last candle
+                    if existing[-1] != candle:
+                        existing[-1] = candle
+                        updates_made = True
+                        # Trigger callback for updated candle
+                        if self.on_candle_update:
+                            self.on_candle_update(symbol, tf_key, candle)
+                elif candle['time'] > last_saved_time:
+                    # Append new candle
+                    existing.append(candle)
+                    last_saved_time = candle['time']
+                    updates_made = True
+                    # Trigger callback for NEW candle
+                    if self.on_candle_update:
+                        self.on_candle_update(symbol, tf_key, candle)
 
-            existing.sort_index(inplace=True)
-            existing.reset_index(inplace=True)
+            # Persist if changed
+            if updates_made:
+                with open(file_path, "w") as f:
+                    json.dump(existing, f)
 
-            # Save to file and cache
-            existing.to_csv(file_path, index=False)
-            self._cache[cache_key] = existing
+    # ── Preloading ────────────────────────────────────────────────
+
+    def preload_all(self, symbols, timeframes=None):
+        """Preload 5000 candles for a list of symbols in background."""
+        if timeframes is None:
+            timeframes = ["M1", "M5", "M15", "H1"]
+            
+        def _worker():
+            print(f"[ChartData] Starting Preload for {len(symbols)} symbols...")
+            for sym in symbols:
+                for tf in timeframes:
+                    try:
+                        self.get_chart_data(sym, tf, count=5000)
+                    except Exception as e:
+                        print(f"Preload error for {sym} {tf}: {e}")
+            print("[ChartData] Preload Complete.")
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     # ── Streaming Control ──────────────────────────────────────────
 
     def start_stream(self, symbol, tf_key):
         """
         Start a background thread that keeps updating local data for a symbol/tf.
-        Called when the user opens the chart section.
         """
         key = (symbol, tf_key)
 
         with self._lock:
-            if key in self._active_streams and self._active_streams[key].is_alive():
-                print(f"[ChartData] Stream already active for {symbol} {tf_key}")
-                return
+            # Check if already running or if we should start it
+            if key in self._active_streams:
+                if self._active_streams[key].is_alive():
+                    return
+                else:
+                    # Clean up dead thread
+                    del self._active_streams[key]
 
-        # Ensure initial data exists
-        file_path = self._file_path(symbol, tf_key)
-        if not os.path.exists(file_path):
-            self._download_initial(symbol, tf_key)
-            # Warm the cache
-            if os.path.exists(file_path):
-                self._cache[key] = pd.read_csv(file_path)
+            # Ensure initial data exists or load it into cache
+            file_path = self._file_path(symbol, tf_key)
+            if not os.path.exists(file_path):
+                self._download_initial(symbol, tf_key)
+            
+            if key not in self._cache and os.path.exists(file_path):
+                with open(file_path, "r") as f:
+                    self._cache[key] = json.load(f)
 
-        stop_event = threading.Event()
-        self._stream_flags[key] = stop_event
+            stop_event = threading.Event()
+            self._stream_flags[key] = stop_event
 
-        thread = threading.Thread(
-            target=self._stream_loop,
-            args=(symbol, tf_key, stop_event),
-            daemon=True
-        )
-        thread.start()
-        self._active_streams[key] = thread
-        print(f"[ChartData] Started stream for {symbol} {tf_key}")
+            thread = threading.Thread(
+                target=self._stream_loop,
+                args=(symbol, tf_key, stop_event),
+                daemon=True
+            )
+            thread.start()
+            self._active_streams[key] = thread
+            print(f"[ChartData] Started stream for {symbol} {tf_key}")
 
     def stop_stream(self, symbol, tf_key):
         """Stop the background update thread for a symbol/tf."""
@@ -188,8 +243,8 @@ class ChartDataManager:
         print("[ChartData] All streams stopped.")
 
     def _stream_loop(self, symbol, tf_key, stop_event):
-        """Background loop: polls MT5 and updates local data at the appropriate interval."""
-        interval = TF_POLL_INTERVAL.get(tf_key, 5.0)
+        """Background loop: polls MT5 and updates local data."""
+        interval = TF_POLL_INTERVAL.get(tf_key, 2.0)
         print(f"[ChartData] Stream loop running for {symbol} {tf_key} (interval: {interval}s)")
 
         while not stop_event.is_set():
@@ -201,43 +256,41 @@ class ChartDataManager:
 
         print(f"[ChartData] Stream loop exited for {symbol} {tf_key}")
 
-    # ── Data Retrieval (for API endpoints) ─────────────────────────
+    # ── Data Retrieval (Zero-Latency) ─────────────────────────────
 
     def get_chart_data(self, symbol, tf_key, count=500, offset=0):
         """
-        Returns OHLC data from the local file for the chart endpoint.
-        Falls back to MT5 if local data doesn't exist yet.
+        Returns OHLC data from the local cache.
         """
         key = (symbol, tf_key)
         file_path = self._file_path(symbol, tf_key)
 
         with self._lock:
             if key in self._cache:
-                df = self._cache[key]
+                data = self._cache[key]
             elif os.path.exists(file_path):
-                df = pd.read_csv(file_path)
-                self._cache[key] = df
+                with open(file_path, "r") as f:
+                    data = json.load(f)
+                self._cache[key] = data
             else:
-                # No local data yet — download it now
-                df = self._download_initial(symbol, tf_key)
-                if df is not None:
-                    self._cache[key] = df
+                data = self._download_initial(symbol, tf_key)
+                if data:
+                    self._cache[key] = data
                 else:
                     return [], False
 
-        if df is None or df.empty:
+        if not data:
             return [], False
 
-        # Apply offset and count (offset from the end)
-        total = len(df)
+        total = len(data)
         if offset > 0:
             end = total - offset
             start = max(0, end - count)
-            sliced = df.iloc[start:end]
+            sliced = data[start:end]
         else:
-            sliced = df.iloc[-count:]
+            sliced = data[-count:]
 
-        has_more = (len(df) > count + offset)
+        has_more = (total > count + offset)
 
         chart_data = [{
             "time": int(row['time']),
@@ -245,57 +298,40 @@ class ChartDataManager:
             "high": float(row['high']),
             "low": float(row['low']),
             "close": float(row['close'])
-        } for _, row in sliced.iterrows()]
+        } for row in sliced]
 
         return chart_data, has_more
 
     def get_udf_history(self, symbol, tf_key, from_ts=None, to_ts=None, countback=None):
         """
-        Returns OHLCV data in UDF format from local files.
-        Falls back to MT5 if local data doesn't exist yet.
+        Returns OHLCV data in UDF format (array of arrays) from local files.
         """
-        key = (symbol, tf_key)
-        file_path = self._file_path(symbol, tf_key)
-
-        with self._lock:
-            if key in self._cache:
-                df = self._cache[key].copy()
-            elif os.path.exists(file_path):
-                df = pd.read_csv(file_path)
-                self._cache[key] = df
-                df = df.copy()
-            else:
-                df = self._download_initial(symbol, tf_key)
-                if df is not None:
-                    self._cache[key] = df
-                    df = df.copy()
-                else:
-                    return {"s": "no_data"}
-
-        if df is None or df.empty:
+        data, _ = self.get_chart_data(symbol, tf_key, count=5000) # Fetch enough data to cover typical UDF requests
+        if not data:
             return {"s": "no_data"}
 
         # Filter by time range or countback
+        result_data = data
         if countback:
-            df = df.tail(min(countback, len(df)))
+            result_data = data[-min(countback, len(data)):]
         elif from_ts is not None and to_ts is not None:
-            df = df[(df['time'] >= from_ts) & (df['time'] <= to_ts)]
+            result_data = [d for d in data if from_ts <= d['time'] <= to_ts]
 
-        if df.empty:
+        if not result_data:
             return {"s": "no_data"}
 
         return {
             "s": "ok",
-            "t": df['time'].astype(int).tolist(),
-            "o": df['open'].astype(float).tolist(),
-            "h": df['high'].astype(float).tolist(),
-            "l": df['low'].astype(float).tolist(),
-            "c": df['close'].astype(float).tolist(),
-            "v": df['tick_volume'].astype(float).tolist()
+            "t": [d['time'] for d in result_data],
+            "o": [d['open'] for d in result_data],
+            "h": [d['high'] for d in result_data],
+            "l": [d['low'] for d in result_data],
+            "c": [d['close'] for d in result_data],
+            "v": [d['tick_volume'] for d in result_data]
         }
 
     def get_active_streams(self):
-        """Returns a list of currently active streams for the status API."""
+        """Returns a list of currently active streams."""
         return [
             {"symbol": sym, "timeframe": tf, "active": thread.is_alive()}
             for (sym, tf), thread in self._active_streams.items()
