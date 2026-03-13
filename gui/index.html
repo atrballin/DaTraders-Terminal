@@ -755,7 +755,7 @@
                 }));
             };
 
-            // Fetch chart data
+            // Fetch chart data and handle WebSocket updates
             useEffect(() => {
                 if (!selectedSymbol || !chartInstanceRef.current) return;
                 let cancelled = false;
@@ -767,11 +767,10 @@
                         const url = `/api/chart/data?symbol=${encodeURIComponent(cleanSymbol)}&timeframe=${timeframe}&count=1500&offset=0`;
                         const res = await fetch(url);
                         const result = await res.json();
-                        const bars = result.data || result; // Fallback to result if data is missing
+                        const bars = result.data || result;
 
                         if (cancelled || !chartInstanceRef.current) return;
 
-                        // Handle array or empty data
                         const barsArr = Array.isArray(bars) ? bars : (bars.data || []);
 
                         if (barsArr.length === 0) {
@@ -790,26 +789,34 @@
                     }
                 };
 
-                const liveUpdate = async () => {
-                    if (cancelled || !chartInstanceRef.current || !selectedSymbol) return;
+                loadChart();
+
+                // WebSocket live updates handler
+                const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${wsProtocol}//${window.location.host}/api/chart/ws`;
+                const socket = new WebSocket(wsUrl);
+
+                socket.onmessage = (event) => {
                     try {
-                        const url = `/api/chart/data?symbol=${encodeURIComponent(selectedSymbol.trim())}&timeframe=${timeframe}&count=1&offset=0`;
-                        const res = await fetch(url);
-                        const result = await res.json();
-                        const bars = result.data || result;
-
-                        if (cancelled || !chartInstanceRef.current || !Array.isArray(bars) || (bars.length === 0 && !bars.data)) return;
-                        const barsArr = Array.isArray(bars) ? bars : (bars.data || []);
-                        if (barsArr.length === 0) return;
-
-                        const latest = transformToKlineData(barsArr)[0];
-                        chartInstanceRef.current.updateData(latest);
+                        const msg = JSON.parse(event.data);
+                        if (msg.type === 'CHART_UPDATE' && 
+                            msg.symbol === selectedSymbol && 
+                            msg.timeframe === timeframe) {
+                            
+                            const klineCandle = transformToKlineData([msg.candle])[0];
+                            if (chartInstanceRef.current) {
+                                chartInstanceRef.current.updateData(klineCandle);
+                            }
+                        }
                     } catch (e) { /* silent */ }
                 };
 
-                loadChart();
-                const interval = setInterval(liveUpdate, 5000); // 5s tick updates
-                return () => { cancelled = true; clearInterval(interval); };
+                socket.onerror = (e) => console.error("Chart WS Error:", e);
+
+                return () => { 
+                    cancelled = true; 
+                    socket.close();
+                };
             }, [selectedSymbol, timeframe]);
 
             // --- Drawing Toolbar Actions ---
