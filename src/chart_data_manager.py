@@ -5,9 +5,18 @@ Saves MT5 OHLC data to JSON files locally and keeps them updated in real-time.
 
 import os
 import json
+import math
 import threading
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
+
+
+def _safe_float(val):
+    """Sanitize MT5 float values — replace NaN/Inf with 0.0 for JSON safety."""
+    f = float(val)
+    if math.isnan(f) or math.isinf(f):
+        return 0.0
+    return f
 
 # Default local storage directory
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "charts")
@@ -27,8 +36,8 @@ UDF_TO_TF = {
     "W": "W1", "1W": "W1"
 }
 
-# How many bars to bootstrap on first download
-INITIAL_BAR_COUNT = 5000
+# How many bars to fetch per chunk
+CHUNK_SIZE = 10000
 
 # Tick update interval per timeframe (seconds)
 # Smaller timeframes poll faster for responsiveness
@@ -55,6 +64,7 @@ class ChartDataManager:
         self._stream_flags = {}     # key: (symbol, tf_key) → threading.Event (stop flag)
         self._lock = threading.Lock()
         self._cache = {}            # key: (symbol, tf_key) → List[dict] (in-memory)
+        self._deep_fetch_flags = {} # key: (symbol, tf_key) → True if deep fetch is running/done
         
         # Callback for real-time updates: func(symbol, tf_key, candle_dict)
         self.on_candle_update = None
@@ -71,34 +81,116 @@ class ChartDataManager:
     # ── Core Data Operations ───────────────────────────────────────
 
     def _download_initial(self, symbol, tf_key):
-        """Downloads a full history chunk from MT5 and saves to JSON."""
+        """
+        Downloads the newest 10,000 bars from MT5, saves to JSON,
+        then kicks off a background thread to fetch all remaining older data.
+        """
         mt5_tf = TF_MAP.get(tf_key)
         if mt5_tf is None:
             print(f"[ChartData] Unknown timeframe: {tf_key}")
             return None
 
-        # copy_rates_from_pos returns a structured numpy array
-        rates = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, INITIAL_BAR_COUNT)
+        # Fetch the first (newest) chunk
+        rates = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, CHUNK_SIZE)
         if rates is None or len(rates) == 0:
             print(f"[ChartData] No data from MT5 for {symbol} {tf_key}")
             return None
 
-        # Convert numpy array to list of dicts for JSON
+        data = self._rates_to_list(rates)
+
+        # Save & cache the first chunk immediately for fast UI
+        with open(self._file_path(symbol, tf_key), "w") as f:
+            json.dump(data, f)
+        print(f"[ChartData] Saved {len(data)} bars for {symbol} {tf_key} (initial chunk)")
+
+        # Start background deep history fetch
+        key = (symbol, tf_key)
+        if key not in self._deep_fetch_flags:
+            self._deep_fetch_flags[key] = True
+            thread = threading.Thread(
+                target=self._fetch_deep_history,
+                args=(symbol, tf_key, len(data)),
+                daemon=True
+            )
+            thread.start()
+
+        return data
+
+    def _fetch_deep_history(self, symbol, tf_key, initial_offset):
+        """
+        Background worker: fetches ALL remaining older history in CHUNK_SIZE chunks.
+        Starts from where the initial download left off and works backwards.
+        """
+        mt5_tf = TF_MAP.get(tf_key)
+        if mt5_tf is None:
+            return
+
+        offset = initial_offset
+        total_fetched = initial_offset
+        file_path = self._file_path(symbol, tf_key)
+
+        while True:
+            try:
+                rates = mt5.copy_rates_from_pos(symbol, mt5_tf, offset, CHUNK_SIZE)
+                if rates is None or len(rates) == 0:
+                    break  # No more data available
+
+                chunk = self._rates_to_list(rates)
+                if not chunk:
+                    break
+
+                with self._lock:
+                    # Load current data
+                    cache_key = (symbol, tf_key)
+                    if cache_key in self._cache:
+                        existing = self._cache[cache_key]
+                    elif os.path.exists(file_path):
+                        with open(file_path, "r") as f:
+                            existing = json.load(f)
+                    else:
+                        existing = []
+
+                    # Prepend older data (chunk is older than existing)
+                    oldest_existing_time = existing[0]['time'] if existing else float('inf')
+                    older_bars = [c for c in chunk if c['time'] < oldest_existing_time]
+
+                    if not older_bars:
+                        break  # No new older data found — we've reached the limit
+
+                    merged = older_bars + existing
+                    self._cache[cache_key] = merged
+
+                    # Save to disk
+                    with open(file_path, "w") as f:
+                        json.dump(merged, f)
+
+                total_fetched += len(older_bars)
+                offset += CHUNK_SIZE
+                print(f"[ChartData] Deep fetch {symbol} {tf_key}: +{len(older_bars)} bars (total: {total_fetched})")
+
+                # Small delay to not overwhelm MT5
+                import time
+                time.sleep(0.5)
+
+            except Exception as e:
+                print(f"[ChartData] Deep fetch error for {symbol} {tf_key}: {e}")
+                break
+
+        print(f"[ChartData] Deep fetch COMPLETE for {symbol} {tf_key}: {total_fetched} total bars")
+
+    @staticmethod
+    def _rates_to_list(rates):
+        """Convert MT5 numpy structured array to a list of sanitized dicts."""
         data = []
         for r in rates:
             data.append({
                 "time": int(r['time']),
-                "open": float(r['open']),
-                "high": float(r['high']),
-                "low": float(r['low']),
-                "close": float(r['close']),
+                "open": _safe_float(r['open']),
+                "high": _safe_float(r['high']),
+                "low": _safe_float(r['low']),
+                "close": _safe_float(r['close']),
                 "tick_volume": int(r['tick_volume'])
             })
-
-        with open(self._file_path(symbol, tf_key), "w") as f:
-            json.dump(data, f)
-            
-        print(f"[ChartData] Saved {len(data)} bars for {symbol} {tf_key}")
         return data
 
     def _update_latest(self, symbol, tf_key):
@@ -141,10 +233,10 @@ class ChartDataManager:
             for r in rates:
                 candle = {
                     "time": int(r['time']),
-                    "open": float(r['open']),
-                    "high": float(r['high']),
-                    "low": float(r['low']),
-                    "close": float(r['close']),
+                    "open": _safe_float(r['open']),
+                    "high": _safe_float(r['high']),
+                    "low": _safe_float(r['low']),
+                    "close": _safe_float(r['close']),
                     "tick_volume": int(r['tick_volume'])
                 }
 
@@ -294,10 +386,10 @@ class ChartDataManager:
 
         chart_data = [{
             "time": int(row['time']),
-            "open": float(row['open']),
-            "high": float(row['high']),
-            "low": float(row['low']),
-            "close": float(row['close'])
+            "open": _safe_float(row['open']),
+            "high": _safe_float(row['high']),
+            "low": _safe_float(row['low']),
+            "close": _safe_float(row['close'])
         } for row in sliced]
 
         return chart_data, has_more
@@ -323,11 +415,11 @@ class ChartDataManager:
         return {
             "s": "ok",
             "t": [d['time'] for d in result_data],
-            "o": [d['open'] for d in result_data],
-            "h": [d['high'] for d in result_data],
-            "l": [d['low'] for d in result_data],
-            "c": [d['close'] for d in result_data],
-            "v": [d['tick_volume'] for d in result_data]
+            "o": [_safe_float(d['open']) for d in result_data],
+            "h": [_safe_float(d['high']) for d in result_data],
+            "l": [_safe_float(d['low']) for d in result_data],
+            "c": [_safe_float(d['close']) for d in result_data],
+            "v": [int(d.get('tick_volume', 0)) for d in result_data]
         }
 
     def get_active_streams(self):

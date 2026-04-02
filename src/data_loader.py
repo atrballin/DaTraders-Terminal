@@ -205,22 +205,34 @@ def get_forexfactory_news():
             forecast = event.find('forecast').text if event.find('forecast') is not None else ""
             previous = event.find('previous').text if event.find('previous') is not None else ""
             
-            # Parse Date and Time (Format: 01-14-2026 10:00am)
+            # Parse Date — handle non-standard time values
+            dt = None
+            time_display = time_str or "All Day"
             try:
-                # Forex Factory Time is usually GMT/UTC or Eastern, 
-                # but the algo compares with datetime.now().
-                # We'll assume the feed time is what the user expects or normalize it locally.
-                dt = datetime.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
+                if time_str and time_str.lower() not in ("", "tentative", "day", "all day"):
+                    dt = datetime.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
+                elif date_str:
+                    dt = datetime.strptime(date_str, "%m-%d-%Y")
+                    time_display = "All Day"
             except:
-                continue # Skip events with malformed time
+                # Last resort — just parse the date part
+                try:
+                    dt = datetime.strptime(date_str, "%m-%d-%Y") if date_str else None
+                    time_display = "All Day"
+                except:
+                    pass
+            
+            if dt is None and not date_str:
+                continue  # Only skip events with NO date at all
             
             events.append({
                 "Event": title,
                 "Country": country,
-                "Date": dt,
+                "Date": dt or datetime.now(),
                 "Impact": impact,
                 "Forecast": forecast,
                 "Previous": previous,
+                "Time": time_display,
                 "publisher": "Forex Factory"
             })
             

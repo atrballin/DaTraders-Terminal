@@ -297,6 +297,14 @@ def add_indicators(df, indicators):
         df['RSI_7'] = calculate_rsi(df, 7)
     if "RSI_4" in indicators:
         df['RSI_4'] = calculate_rsi(df, 4)
+    # Dynamic RSI_X processing
+    for ind in indicators:
+        if ind.startswith("RSI_") and ind not in df.columns:
+            try:
+                period = int(ind.split("_")[1])
+                df[ind] = calculate_rsi(df, period)
+            except (ValueError, IndexError):
+                pass
     if "MACD" in indicators:
         macd_df = calculate_macd(df)
         df['MACD'] = macd_df['MACD']
@@ -345,6 +353,14 @@ def add_indicators(df, indicators):
         df['ADX_14'] = calculate_adx(df, 14)
     if "ADX_80" in indicators:
         df['ADX_80'] = calculate_adx(df, 80)
+    # Dynamic ADX_X processing
+    for ind in indicators:
+        if ind.startswith("ADX_") and ind not in df.columns:
+            try:
+                period = int(ind.split("_")[1])
+                df[ind] = calculate_adx(df, period)
+            except (ValueError, IndexError):
+                pass
     if "Fractals" in indicators:
         df = calculate_fractals(df)
     return df

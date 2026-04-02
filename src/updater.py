@@ -380,5 +380,10 @@ def check_and_apply_updates():
         time.sleep(5400) # Check every 1.5 hours
 
 def start_updater_bg():
+    import sys
+    if not hasattr(sys, 'frozen'):
+        print("[Updater] Running from source code (Beta Mode). Auto-updater disabled.")
+        return
+        
     thread = threading.Thread(target=check_and_apply_updates, daemon=True)
     thread.start()

@@ -974,3 +974,50 @@ def get_history_24h():
         "deals": deal_list,
         "total_profit": round(total_profit, 2)
     }
+
+def get_consecutive_losses(symbol, hours_lookback=24):
+    """
+    Returns (consecutive_loss_count, time_of_last_loss_datetime)
+    Scans the MT5 deal history to count consecutive losing trades for a specific symbol.
+    """
+    from datetime import datetime, timedelta
+    
+    # Initialize if needed
+    if not mt5.initialize():
+        return 0, None
+
+    to_date = datetime.now()
+    from_date = to_date - timedelta(hours=hours_lookback)
+    
+    # Query history specifically for this symbol
+    deals = mt5.history_deals_get(from_date, to_date, group=f"*{symbol}*")
+    
+    if deals is None or len(deals) == 0:
+        return 0, None
+
+    # Filter deals for valid trade exits (meaning the trade closed)
+    # DEAL_ENTRY_OUT (1) and DEAL_ENTRY_INOUT (2)
+    exits = [d for d in deals if d.symbol == symbol and d.entry in [1, 2]]
+    
+    if not exits:
+        return 0, None
+        
+    # Sort exits from newest to oldest based on exit time
+    exits.sort(key=lambda x: x.time, reverse=True)
+    
+    loss_count = 0
+    time_of_latest_loss = None
+    
+    for deal in exits:
+        net_profit = deal.profit + deal.commission + deal.swap
+        
+        if net_profit < 0:
+            loss_count += 1
+            if time_of_latest_loss is None:
+                # Store the exact time the most recent loss occurred
+                time_of_latest_loss = datetime.fromtimestamp(deal.time)
+        elif net_profit > 0:
+            # A profitable trade breaks the consecutive losing streak!
+            break
+            
+    return loss_count, time_of_latest_loss
