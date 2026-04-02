@@ -312,9 +312,9 @@
 
         const RiskMeter = ({ symbol, risk }) => {
             const getTrendInfo = () => {
-                if (risk === 100) return { color: 'bg-blue-500', label: 'Strong Up', textColor: 'text-blue-500' };
-                if (risk === 0) return { color: 'bg-red-500', label: 'Strong Down', textColor: 'text-red-500' };
-                return { color: 'bg-gray-500', label: 'Trend...', textColor: 'text-gray-500' };
+                if (risk >= 50) return { color: 'bg-blue-500', label: 'UPTREND', textColor: 'text-blue-500' };
+                if (risk < 50) return { color: 'bg-red-500', label: 'DOWNTREND', textColor: 'text-red-500' };
+                return { color: 'bg-gray-500', label: 'NEUTRAL', textColor: 'text-gray-500' };
             };
             const trend = getTrendInfo();
 
@@ -477,16 +477,21 @@
                                 <label className="text-[10px] font-bold text-gray-400 uppercase mb-2 block">Volume (Lots)</label>
                                 <div className="relative">
                                     <input
-                                        type="text"
-                                        readOnly
+                                        type="number"
+                                        step="0.01"
+                                        min="0.01"
                                         className={`dv-input text-2xl font-black w-full bg-[#121212] ${isSmartLoading ? 'animate-pulse text-gray-700' : 'text-[#4B91F7]'}`}
-                                        value={isSmartLoading ? '...' : smartVolume.toFixed(2)}
+                                        value={order.volume}
+                                        onChange={e => setOrder({ ...order, volume: e.target.value })}
                                     />
-                                    <div className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] bg-[#4B91F7]/20 text-[#4B91F7] px-2 py-1 rounded font-bold border border-[#4B91F7]/30">
-                                        LOCKED
+                                    <div 
+                                        onClick={() => setOrder({ ...order, volume: smartVolume.toFixed(2) })}
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] bg-[#4B91F7]/20 text-[#4B91F7] px-2 py-1 rounded font-bold border border-[#4B91F7]/30 cursor-pointer hover:bg-[#4B91F7]/40 transition-colors"
+                                    >
+                                        SMART: {smartVolume.toFixed(2)}
                                     </div>
                                 </div>
-                                <p className="text-[9px] text-gray-600 mt-1 uppercase">Managed by engine (Balance-Based)</p>
+                                <p className="text-[9px] text-gray-600 mt-1 uppercase">Click SMART badge to reset to engine-calculated volume</p>
                             </div>
 
                             <div className="grid grid-cols-2 gap-4">
@@ -675,20 +680,37 @@
                 }
             };
 
-            // Initialize chart
-            useEffect(() => {
-                if (!chartContainerRef.current) return;
+            // Helper to transform our backend MT5 data to KlineCharts format
+            const transformToKlineData = (bars) => {
+                return (Array.isArray(bars) ? bars : []).map(b => ({
+                    timestamp: b.time * 1000,
+                    open: b.open,
+                    high: b.high,
+                    low: b.low,
+                    close: b.close,
+                    volume: b.volume || 0
+                }));
+            };
 
-                // Clean up any previous chart
+            // Initialize chart, load data, and handle WebSocket — single unified effect
+            useEffect(() => {
+                if (!chartContainerRef.current || !selectedSymbol) return;
+                let cancelled = false;
+
+                // 1. DISPOSE previous chart completely
                 if (chartInstanceRef.current) {
-                    try { saveDrawings(); klinecharts.dispose(chartContainerRef.current); } catch (e) { }
+                    try { saveDrawings(); } catch (e) { }
+                    try { klinecharts.dispose(chartContainerRef.current); } catch (e) { }
                     chartInstanceRef.current = null;
                 }
 
-                try {
-                    const container = chartContainerRef.current;
-                    const chart = klinecharts.init(container);
+                // 2. CLEAR container DOM to ensure fresh state
+                chartContainerRef.current.innerHTML = '';
 
+                // 3. CREATE new chart instance
+                let chart;
+                try {
+                    chart = klinecharts.init(chartContainerRef.current);
                     chart.setStyles({
                         grid: {
                             horizontal: { color: 'rgba(45, 50, 62, 0.5)' },
@@ -710,56 +732,28 @@
                         xAxis: { tickText: { color: '#D9D9D9' }, axisLine: { color: '#2D323E' } },
                         yAxis: { tickText: { color: '#D9D9D9' }, axisLine: { color: '#2D323E' } }
                     });
-
                     chartInstanceRef.current = chart;
                     setChartError(null);
-
-                    // Load previous drawings
                     loadDrawings(chart);
-
-                    // Use ResizeObserver for reliable auto-sizing
-                    const resizeObserver = new ResizeObserver(entries => {
-                        for (const entry of entries) {
-                            const { width, height } = entry.contentRect;
-                            if (width > 0 && height > 0) {
-                                chart.resize();
-                            }
-                        }
-                    });
-                    resizeObserver.observe(container);
-
-                    // Save drawings periodically
-                    const autoSaveIntevral = setInterval(saveDrawings, 5000);
-
-                    return () => {
-                        clearInterval(autoSaveIntevral);
-                        resizeObserver.disconnect();
-                        try { saveDrawings(); klinecharts.dispose(container); } catch (e) { }
-                        chartInstanceRef.current = null;
-                    };
                 } catch (err) {
                     console.error('Chart Init Error:', err);
                     setChartError('Failed to initialize chart: ' + err.message);
+                    return;
                 }
-            }, [selectedSymbol, timeframe]);
 
-            // Helper to transform our backend MT5 data to KlineCharts format
-            const transformToKlineData = (bars) => {
-                return (Array.isArray(bars) ? bars : []).map(b => ({
-                    timestamp: b.time * 1000,
-                    open: b.open,
-                    high: b.high,
-                    low: b.low,
-                    close: b.close,
-                    volume: b.volume || 0
-                }));
-            };
+                // 4. RESIZE observer
+                const container = chartContainerRef.current;
+                const resizeObserver = new ResizeObserver(entries => {
+                    for (const entry of entries) {
+                        const { width, height } = entry.contentRect;
+                        if (width > 0 && height > 0 && chartInstanceRef.current) {
+                            chartInstanceRef.current.resize();
+                        }
+                    }
+                });
+                resizeObserver.observe(container);
 
-            // Fetch chart data and handle WebSocket updates
-            useEffect(() => {
-                if (!selectedSymbol || !chartInstanceRef.current) return;
-                let cancelled = false;
-
+                // 5. FETCH chart data
                 const loadChart = async () => {
                     setLoading(true);
                     try {
@@ -783,15 +777,14 @@
                         }
                     } catch (e) {
                         console.error('Chart Load Error:', e);
-                        setChartError('Data synchronization failed.');
+                        if (!cancelled) setChartError('Data synchronization failed.');
                     } finally {
                         if (!cancelled) setLoading(false);
                     }
                 };
-
                 loadChart();
 
-                // WebSocket live updates handler
+                // 6. WEBSOCKET for live updates
                 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 const wsUrl = `${wsProtocol}//${window.location.host}/api/chart/ws`;
                 const socket = new WebSocket(wsUrl);
@@ -813,9 +806,18 @@
 
                 socket.onerror = (e) => console.error("Chart WS Error:", e);
 
-                return () => { 
-                    cancelled = true; 
-                    socket.close();
+                // 7. AUTO-SAVE drawings
+                const autoSaveInterval = setInterval(saveDrawings, 5000);
+
+                // 8. CLEANUP on symbol/timeframe change or unmount
+                return () => {
+                    cancelled = true;
+                    clearInterval(autoSaveInterval);
+                    resizeObserver.disconnect();
+                    try { socket.close(); } catch (e) { }
+                    try { saveDrawings(); } catch (e) { }
+                    try { klinecharts.dispose(container); } catch (e) { }
+                    chartInstanceRef.current = null;
                 };
             }, [selectedSymbol, timeframe]);
 
@@ -885,12 +887,11 @@
 
                     {/* Chart Container - fills remaining space */}
                     <div className="glass-panel overflow-hidden mt-4" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-                        {chartError ? (
-                            <div className="flex items-center justify-center h-full text-red-400 text-sm font-bold">
-                                {chartError}
+                        <div ref={chartContainerRef} style={{ width: '100%', height: '100%' }} />
+                        {chartError && (
+                            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.75)', zIndex: 10 }}>
+                                <div className="text-red-400 text-sm font-bold">{chartError}</div>
                             </div>
-                        ) : (
-                            <div ref={chartContainerRef} style={{ width: '100%', height: '100%' }} />
                         )}
                     </div>
                 </div>
@@ -938,6 +939,7 @@
                 token: null,
                 otp: ''
             });
+            const [resendTimer, setResendTimer] = useState(0);
 
             const [activeTab, setActiveTab] = useState('DASHBOARD');
             const [data, setData] = useState({
@@ -949,7 +951,9 @@
                 news: [],
                 calendar: [],
                 scanResults: { signals: {}, last_scan: null },
-                allSymbols: []
+                allSymbols: [],
+                nftRunning: false,
+                nftActiveTrades: 0
             });
             const [notifications, setNotifications] = useState([]);
             const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -969,7 +973,8 @@
                         { key: 'calendar', url: '/api/news/calendar', default: [] },
                         { key: 'notifications', url: '/api/notifications', default: [] },
                         { key: 'scanResults', url: '/api/scan_results', default: { signals: {}, last_scan: null } },
-                        { key: 'allSymbols', url: '/api/symbols', default: [] }
+                        { key: 'allSymbols', url: '/api/symbols', default: [] },
+                        { key: 'nftStatus', url: '/api/news/straddle/status', default: { running: false, active_trades: 0 } }
                     ];
 
                     const results = await Promise.all(endpoints.map(async (ep) => {
@@ -990,6 +995,9 @@
                         if (res.data !== null) {
                             if (res.key === 'notifications') {
                                 newNotes = res.data;
+                            } else if (res.key === 'nftStatus') {
+                                newData.nftRunning = res.data.running || false;
+                                newData.nftActiveTrades = res.data.active_trades || 0;
                             } else {
                                 newData[res.key] = res.data;
                             }
@@ -1047,6 +1055,13 @@
 
             // --- Authentication Logic ---
             useEffect(() => {
+                if (authState.step === 'OTP' && resendTimer > 0) {
+                    const timerId = setTimeout(() => setResendTimer(resendTimer - 1), 1000);
+                    return () => clearTimeout(timerId);
+                }
+            }, [resendTimer, authState.step]);
+
+            useEffect(() => {
                 if (authState.step === 'SCAN') {
                     const scanInt = setInterval(async () => {
                         try {
@@ -1093,6 +1108,7 @@
                     } else if (json.otp_required) {
                         // Transition to OTP step
                         setAuthState({ ...authState, step: 'OTP' });
+                        setResendTimer(60);
                     } else {
                         alert("Verification Failed: " + json.message);
                     }
@@ -1128,6 +1144,33 @@
                     }
                 } catch (e) {
                     alert("OTP System Error: " + e.message);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            const resendOTP = async () => {
+                if (isLoading || resendTimer > 0) return;
+                setIsLoading(true);
+                try {
+                    const res = await fetch('/api/auth/verify_discord', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            email: authState.email,
+                            discord_username: authState.discordUser,
+                            token: authState.token
+                        })
+                    });
+                    const json = await res.json();
+                    if (json.otp_required || json.success) {
+                        setResendTimer(60);
+                        alert("A new OTP has been sent to your Discord DMs.");
+                    } else {
+                        alert("Failed to resend OTP: " + json.message);
+                    }
+                } catch (e) {
+                    alert("System Error: " + e.message);
                 } finally {
                     setIsLoading(false);
                 }
@@ -1293,6 +1336,13 @@
                                     {isLoading ? 'VERIFYING...' : 'LOGIN TO TERMINAL'}
                                 </button>
                                 <button
+                                    className={`dv-btn w-full mt-2 font-bold ${resendTimer > 0 || isLoading ? 'bg-[#2D323E] text-gray-400 opacity-60 cursor-not-allowed' : 'bg-[#4B91F7] text-white hover:bg-[#3b7ad9]'}`}
+                                    onClick={resendOTP}
+                                    disabled={resendTimer > 0 || isLoading}
+                                >
+                                    {resendTimer > 0 ? `RESEND OTP IN ${resendTimer}S` : 'RESEND OTP'}
+                                </button>
+                                <button
                                     className="w-full mt-4 text-[10px] text-gray-500 hover:text-gray-300 font-bold uppercase transition-colors"
                                     onClick={() => setAuthState({ ...authState, step: 'DISCORD', otp: '' })}
                                 >
@@ -1320,6 +1370,7 @@
                                 { id: 'CHARTS', label: 'Charts', icon: 'bar-chart-3' },
                                 { id: 'NEWS', label: 'News', icon: 'globe' },
                                 { id: 'CALENDAR', label: 'Calendar', icon: 'calendar-days' },
+                                { id: 'NEWSFT', label: 'NewsFT', icon: 'zap' },
                                 { id: 'ALGO', label: 'AtlasPrime', icon: 'cpu' },
                             ]?.map(tab => (
                                 <div
@@ -1526,16 +1577,42 @@
                                             <div>
                                                 <label className="text-[10px] text-gray-500 font-bold uppercase mb-2 block">Market Group</label>
                                                 <div className="flex rounded-md overflow-hidden border border-[#333]">
-                                                    {['RBI (Range)', 'VOC (550)', 'ALL (RBI + VOC)'].map(opt => (
-                                                        <button
-                                                            key={opt}
-                                                            onClick={() => updateSettings({ ...data.settings, cb_group: opt })}
-                                                            className={`flex-1 py-3 text-xs font-bold transition-colors ${data.settings.cb_group === opt ? 'bg-[#4B91F7] text-white' : 'bg-[#121212] text-gray-400 hover:bg-[#1E1E1E]'
+                                                    {['DSI (Drift)', 'V100 (Vol100)', 'V250 (Vol250)'].map(opt => {
+                                                        const optKey = opt.split(' ')[0];
+                                                        const currentStr = data.settings.cb_group || "";
+                                                        const isSelected = currentStr.includes(optKey);
+                                                        
+                                                        // V100 Eligibility Check
+                                                        const isV100 = optKey === "V100";
+                                                        const isEligible = data.account?.is_v100_eligible !== false;
+                                                        const isRestricted = isV100 && !isEligible && !isSelected;
+                                                        
+                                                        const handleToggle = () => {
+                                                            if (isRestricted) return;
+                                                            let groups = currentStr.split(',').map(s=>s.trim()).filter(Boolean);
+                                                            if (isSelected) {
+                                                                groups = groups.filter(g => !g.includes(optKey));
+                                                            } else {
+                                                                groups.push(optKey);
+                                                            }
+                                                            updateSettings({ ...data.settings, cb_group: groups.join(',') });
+                                                        };
+                                                        
+                                                        return (
+                                                            <button
+                                                                key={opt}
+                                                                onClick={handleToggle}
+                                                                disabled={isRestricted}
+                                                                className={`flex-1 py-3 text-xs font-bold transition-all duration-300 ${
+                                                                    isSelected ? 'bg-blue-900/30 text-[#4B91F7] border border-[#4B91F7] shadow-[0_0_15px_rgba(75,145,247,0.6)] z-10 rounded-md relative' : 
+                                                                    isRestricted ? 'bg-red-900/10 text-red-800 border-red-900/20 cursor-not-allowed opacity-50' :
+                                                                    'bg-[#121212] text-gray-500 border border-transparent hover:bg-[#1a1a1a] hover:text-gray-300'
                                                                 }`}
-                                                        >
-                                                            {opt}
-                                                        </button>
-                                                    ))}
+                                                            >
+                                                                {isRestricted ? 'NOT ENOUGH FUNDS' : opt}
+                                                            </button>
+                                                        );
+                                                    })}
                                                 </div>
                                             </div>
 
@@ -1573,6 +1650,22 @@
                                                     onChange={e => updateSettings({ ...data.settings, max_trades_day: parseInt(e.target.value) })}
                                                 />
                                             </div>
+
+                                            <div className="flex items-center justify-between bg-[#121212] p-4 rounded-lg border border-[#333] animate-fade-in">
+                                                <div>
+                                                    <div className="text-sm font-bold flex items-center gap-2 text-[#5865F2]">
+                                                        <LucideIcon name="message-square" size={16} />
+                                                        Send Signal
+                                                    </div>
+                                                    <div className="text-[10px] text-gray-500 uppercase">Trade Alerts To Discord DMs</div>
+                                                </div>
+                                                <button
+                                                    onClick={() => updateSettings({ ...data.settings, send_discord_alerts: !data.settings.send_discord_alerts })}
+                                                    className={`w-12 h-6 rounded-full relative transition-colors ${data.settings.send_discord_alerts ? 'bg-green-500' : 'bg-gray-700'}`}
+                                                >
+                                                    <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${data.settings.send_discord_alerts ? 'left-7' : 'left-1'}`}></div>
+                                                </button>
+                                            </div>
                                         </div>
                                     </div>
 
@@ -1598,6 +1691,42 @@
                                                         const signal = sig.signal || 'NONE';
                                                         const reason = sig.reason || '';
 
+                                                        const hasWindowLogic = sig.hasOwnProperty('rsi_window') || sig.hasOwnProperty('adx_window');
+                                                        let countdownText = "";
+                                                        let windowClass = "";
+                                                        if (hasWindowLogic) {
+                                                            const rsiStart = sig.rsi_countdown_start ? new Date(sig.rsi_countdown_start).getTime() : null;
+                                                            const adxStart = sig.adx_countdown_start ? new Date(sig.adx_countdown_start).getTime() : null;
+                                                            const activeCountdownStart = rsiStart || adxStart;
+                                                            const windowOpen = sig.rsi_window || sig.adx_window;
+                                                            const countdownHours = sig.countdown_hours || 2.0;
+
+                                                            if (windowOpen) {
+                                                                if (activeCountdownStart) {
+                                                                    // We calculate exact elapsed time compared to UI clock
+                                                                    const elapsedSec = (Date.now() - activeCountdownStart) / 1000;
+                                                                    const totalSec = countdownHours * 3600;
+                                                                    const remainingSec = Math.max(0, totalSec - elapsedSec);
+                                                                    if (remainingSec > 0) {
+                                                                        const h = Math.floor(remainingSec / 3600);
+                                                                        const m = Math.floor((remainingSec % 3600) / 60).toString().padStart(2, '0');
+                                                                        const s = Math.floor(remainingSec % 60).toString().padStart(2, '0');
+                                                                        countdownText = `CLOSING IN ${h}:${m}:${s}`;
+                                                                        windowClass = "text-yellow-400 border-yellow-800 bg-[#3a2a0a]";
+                                                                    } else {
+                                                                        countdownText = "CLOSED";
+                                                                        windowClass = "text-gray-500 border-gray-700 bg-[#111]";
+                                                                    }
+                                                                } else {
+                                                                    countdownText = "OPEN (AWAITING CROSS)";
+                                                                    windowClass = "text-green-400 border-green-800 bg-[#0f3a15] animate-pulse";
+                                                                }
+                                                            } else {
+                                                                countdownText = "CLOSED";
+                                                                windowClass = "text-gray-500 border-gray-700 bg-[#111]";
+                                                            }
+                                                        }
+
                                                         return (
                                                             <div key={sym} className="bg-[#1a1a1a] p-3 rounded border border-[#333] hover:border-[#4B91F7] transition-colors group">
                                                                 <div className="flex justify-between items-center mb-2">
@@ -1613,21 +1742,28 @@
                                                                 <div className="mb-2">
                                                                     <div className="flex justify-between text-[9px] text-gray-500 mb-1 font-mono">
                                                                         <span>TREND STRENGTH</span>
-                                                                        <span className={risk === 100 ? 'text-blue-400 font-bold' : risk === 75 ? 'text-blue-300 font-bold' : risk === 0 ? 'text-red-400 font-bold' : risk === 25 ? 'text-red-300 font-bold' : 'text-gray-400'}>
-                                                                            {risk === 100 ? 'STRONG UP' : risk === 75 ? 'WEAK UP' : risk === 0 ? 'STRONG DOWN' : risk === 25 ? 'WEAK DOWN' : 'NEUTRAL'}
+                                                                        <span className={risk >= 50 ? 'text-blue-400 font-bold' : 'text-red-400 font-bold'}>
+                                                                            {risk >= 50 ? 'UPTREND' : 'DOWNTREND'}
                                                                         </span>
                                                                     </div>
-                                                                    <div className="w-full h-1.5 bg-gray-900 rounded-full overflow-hidden border border-[#333]">
+                                                                    <div className="w-full h-1.5 bg-[#111] rounded-full overflow-hidden border border-[#333]">
                                                                         <div
-                                                                            className={`h-full transition-all duration-500 ${risk >= 75 ? 'bg-blue-500 shadow-[0_0_5px_#3b82f6]' : risk <= 25 ? 'bg-red-500 shadow-[0_0_5px_#ef4444]' : 'bg-gray-500'}`}
-                                                                            style={{ width: `${Math.min(risk, 100)}%` }}
+                                                                            className={`h-full transition-all duration-500 ${risk >= 50 ? 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'}`}
+                                                                            style={{ width: '100%' }}
                                                                         ></div>
                                                                     </div>
                                                                 </div>
 
-                                                                <div className="text-[9px] text-gray-500 truncate border-t border-[#222] pt-2 mt-2" title={reason}>
-                                                                    {reason || 'No signal data'}
-                                                                </div>
+                                                                {hasWindowLogic && (
+                                                                    <div className="mt-3 pt-3 border-t border-[#333]">
+                                                                        <div className="flex justify-between items-center text-[9px] font-mono">
+                                                                            <span className="text-gray-500">EXEC WINDOW</span>
+                                                                            <span className={`px-1.5 py-0.5 rounded border ${windowClass} font-bold`}>
+                                                                                {countdownText}
+                                                                            </span>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         );
                                                     })
@@ -1673,21 +1809,133 @@
                             {activeTab === 'CALENDAR' && (
                                 <div className="animate-fade-in space-y-4">
                                     <h2 className="text-2xl font-bold text-white mb-6">Economic Calendar</h2>
+                                    {(data.calendar || []).length === 0 && <div className="text-gray-500 italic">Loading calendar data...</div>}
                                     {(data.calendar || []).map((ev, i) => (
                                         <div key={i} className="glass-panel p-4 flex items-center justify-between">
                                             <div>
-                                                <div className="text-[10px] font-bold text-gray-500 uppercase">{ev.formatted_date || ev.Date}</div>
+                                                <div className="text-[10px] font-bold text-gray-500 uppercase">{ev.formatted_date || ev.Date} {ev.Time ? `• ${ev.Time}` : ''}</div>
                                                 <div className="font-bold text-white">{ev.Event}</div>
                                                 <div className="text-xs text-gray-400">{ev.Country}</div>
                                             </div>
                                             <div className="text-right">
-                                                <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${ev.Impact === 'High' ? 'bg-red-900 text-red-200' : 'bg-yellow-900 text-yellow-200'}`}>
+                                                <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${ev.Impact === 'High' ? 'bg-red-900 text-red-200' : ev.Impact === 'Medium' ? 'bg-yellow-900 text-yellow-200' : 'bg-gray-800 text-gray-400'}`}>
                                                     {ev.Impact} Impact
                                                 </span>
-                                                <div className="text-xs font-mono mt-1 text-gray-500">FC: {ev.Forecast} | PREV: {ev.Previous}</div>
+                                                <div className="text-xs font-mono mt-1 text-gray-500">FC: {ev.Forecast || '—'} | PREV: {ev.Previous || '—'}</div>
                                             </div>
                                         </div>
                                     ))}
+                                </div>
+                            )}
+
+                            {activeTab === 'NEWSFT' && (
+                                <div className="animate-fade-in space-y-6">
+                                    <h2 className="text-2xl font-bold text-white mb-2">News Flash Trade</h2>
+
+                                    {/* Engine Status & Control */}
+                                    <div className={`glass-panel p-5 border-l-4 ${data.nftRunning ? 'border-l-green-500' : 'border-l-red-500'}`}>
+                                        <div className="flex items-center justify-between mb-3">
+                                            <div>
+                                                <h3 className="font-bold text-white text-lg">NFT Engine</h3>
+                                                <p className="text-xs text-gray-500">Manages OCO cancellation, scale-in spam, and trailing</p>
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                <span className={`text-xs font-bold px-3 py-1 rounded-full ${data.nftRunning ? 'bg-green-500/20 text-green-400 animate-pulse' : 'bg-red-500/20 text-red-400'}`}>
+                                                    {data.nftRunning ? '● ONLINE' : '○ OFFLINE'}
+                                                </span>
+                                                <button
+                                                    onClick={async () => {
+                                                        const endpoint = data.nftRunning ? '/api/news/straddle/stop' : '/api/news/straddle/start';
+                                                        try {
+                                                            const res = await fetch(endpoint, { method: 'POST' });
+                                                            const r = await res.json();
+                                                            setData(d => ({ ...d, nftRunning: r.running }));
+                                                        } catch(e) { console.error(e); }
+                                                    }}
+                                                    className={`px-4 py-2 rounded-lg font-bold text-xs uppercase tracking-widest transition-all ${
+                                                        data.nftRunning 
+                                                            ? 'bg-red-600/20 text-red-400 hover:bg-red-600/40 border border-red-600/30' 
+                                                            : 'bg-green-600/20 text-green-400 hover:bg-green-600/40 border border-green-600/30'
+                                                    }`}
+                                                >
+                                                    {data.nftRunning ? '■ STOP' : '▶ START'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                        {data.nftActiveTrades > 0 && (
+                                            <div className="text-xs text-yellow-400 font-mono bg-yellow-500/10 p-2 rounded">
+                                                Active Trade Groups: {data.nftActiveTrades}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Straddle Execution */}
+                                    <div className="glass-panel p-6 border-l-4 border-l-yellow-500">
+                                        <h3 className="font-bold text-white text-lg mb-4">⚡ Quick Straddle</h3>
+                                        <div className="grid grid-cols-3 gap-4 mb-4">
+                                            <div>
+                                                <label className="text-[10px] text-gray-500 uppercase font-bold">Symbol</label>
+                                                <input id="nft-symbol" defaultValue="XAUUSDm" className="dv-input w-full mt-1" />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] text-gray-500 uppercase font-bold">Buffer (pts)</label>
+                                                <input id="nft-buffer" type="number" defaultValue="3" step="0.5" className="dv-input w-full mt-1" />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] text-gray-500 uppercase font-bold">Lot Size</label>
+                                                <input id="nft-lot" type="number" defaultValue="0.01" step="0.01" className="dv-input w-full mt-1" />
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={async () => {
+                                                const sym = document.getElementById('nft-symbol').value;
+                                                const buf = parseFloat(document.getElementById('nft-buffer').value);
+                                                const lot = parseFloat(document.getElementById('nft-lot').value);
+                                                try {
+                                                    const res = await fetch(`/api/news/straddle?symbol=${encodeURIComponent(sym)}&buffer=${buf}&lot=${lot}`, { method: 'POST' });
+                                                    const result = await res.json();
+                                                    alert(result.message);
+                                                    if (result.engine_running) setData(d => ({ ...d, nftRunning: true }));
+                                                } catch (e) { alert('Straddle failed: ' + e.message); }
+                                            }}
+                                            className="w-full py-3 rounded-lg font-bold text-sm uppercase tracking-widest bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-500 hover:to-orange-500 text-white transition-all"
+                                        >
+                                            ⚡ EXECUTE STRADDLE (Auto-Starts Engine)
+                                        </button>
+                                        <p className="text-[9px] text-gray-600 mt-2 text-center uppercase">Engine will auto-start if offline • Spams trades in winning direction until margin full</p>
+                                    </div>
+
+                                    {/* Upcoming High Impact Events */}
+                                    <div className="glass-panel p-6">
+                                        <h3 className="font-bold text-white text-lg mb-4">📅 Upcoming High Impact</h3>
+                                        {(data.calendar || []).filter(ev => ev.Impact === 'High').length === 0 && (
+                                            <div className="text-gray-500 italic text-sm">No high-impact events this week.</div>
+                                        )}
+                                        {(data.calendar || []).filter(ev => ev.Impact === 'High').map((ev, i) => (
+                                            <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-[#1A1C23] mb-2 border-l-4 border-red-500">
+                                                <div>
+                                                    <div className="text-white font-bold text-sm">{ev.Event}</div>
+                                                    <div className="text-[10px] text-gray-500">{ev.Country} • {ev.formatted_date || ev.Date} {ev.Time ? `• ${ev.Time}` : ''}</div>
+                                                </div>
+                                                <div className="text-right">
+                                                    <div className="text-xs font-mono text-gray-500">FC: {ev.Forecast || '—'}</div>
+                                                    <div className="text-xs font-mono text-gray-500">PREV: {ev.Previous || '—'}</div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {/* Strategy Info */}
+                                    <div className="glass-panel p-5 border-l-4 border-l-blue-500">
+                                        <h3 className="font-bold text-white text-sm mb-2">📖 Strategy Info</h3>
+                                        <ul className="text-xs text-gray-400 space-y-1">
+                                            <li>• Places Buy Stop + Sell Stop around current price</li>
+                                            <li>• Buffer: Distance from price for pending orders</li>
+                                            <li>• Gold: Fixed 3pt buffer, 5pt SL, 5pt TP (backtest validated)</li>
+                                            <li>• OCO: When one side fills, the other is monitored for cancellation</li>
+                                            <li>• Best used 20s before CPI, NFP, FOMC releases</li>
+                                        </ul>
+                                    </div>
                                 </div>
                             )}
                         </div>
